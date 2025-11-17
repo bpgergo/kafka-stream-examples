@@ -1,0 +1,165 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-streams
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: candlestick-processor-config
+  namespace: kafka-streams
+data:
+  INPUT_TOPIC: "streams-candlestick-input"
+  OUTPUT_TOPIC: "streams-candlestick-processor-output"
+  DLQ_TOPIC: "streams-candlestick-dlq"
+  APPLICATION_ID: "candlestick-processor"
+  BOOTSTRAP_SERVERS: "kafka-service:9092"
+  NUM_STREAM_THREADS: "2"
+  REPLICATION_FACTOR: "3"
+  NUM_STANDBY_REPLICAS: "1"
+  STATE_DIR: "/var/kafka-streams"
+
+---
+# PersistentVolumeClaim for state store
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-streams-state-pvc
+  namespace: kafka-streams
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candlestick-processor
+  namespace: kafka-streams
+  labels:
+    app: candlestick-processor
+spec:
+  replicas: 3  # Run 3 instances for high availability
+  selector:
+    matchLabels:
+      app: candlestick-processor
+  template:
+    metadata:
+      labels:
+        app: candlestick-processor
+    spec:
+      containers:
+        - name: candlestick-processor
+          image: candlestick-processor:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          envFrom:
+            - configMapRef:
+                name: candlestick-processor-config
+
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+
+          volumeMounts:
+            - name: state-storage
+              mountPath: /var/kafka-streams
+
+          livenessProbe:
+            exec:
+              command:
+                - pgrep
+                - -f
+                - candlestick-processor
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+                - pgrep
+                - -f
+                - candlestick-processor
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+      volumes:
+        - name: state-storage
+          persistentVolumeClaim:
+            claimName: kafka-streams-state-pvc
+
+      # Pod anti-affinity to spread replicas across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - candlestick-processor
+                topologyKey: kubernetes.io/hostname
+
+---
+# Service (if you need to expose metrics)
+apiVersion: v1
+kind: Service
+metadata:
+  name: candlestick-processor-service
+  namespace: kafka-streams
+spec:
+  selector:
+    app: candlestick-processor
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# HorizontalPodAutoscaler (optional)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: candlestick-processor-hpa
+  namespace: kafka-streams
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: candlestick-processor
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

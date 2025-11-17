@@ -1,0 +1,13 @@
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/CandleStickDemo.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/CandlestickProcessor.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/CandlestickWithLogging.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/JsonTimestampExtractor.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/LineSplit.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/PageViewTypedDemo.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/PageViewUntypedDemo.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/Pipe.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/PlainMain.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/TemperatureDemo.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/WordCount.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/WordCountProcessorDemo.java
+/Users/gergo/Documents/000JOB/Kafka/code/StreamApps/Archetype/streams-quickstart/src/main/java/myapps/WordCountTransformerDemo.java

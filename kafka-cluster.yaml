@@ -1,0 +1,273 @@
+################################################################################
+# KAFKA 4.1.1 IN KRAFT MODE (No Zookeeper)
+# 3-node cluster with combined controller+broker roles
+################################################################################
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-streams
+
+---
+# Headless service for Kafka cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-service
+  namespace: kafka-streams
+  labels:
+    app: kafka
+spec:
+  ports:
+    - port: 9092
+      name: client
+      protocol: TCP
+    - port: 9093
+      name: controller
+      protocol: TCP
+  clusterIP: None
+  selector:
+    app: kafka
+
+---
+# ConfigMap for KRaft cluster configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+  namespace: kafka-streams
+data:
+  # Generate cluster ID: docker run --rm confluentinc/cp-kafka:7.5.0 kafka-storage random-uuid
+  CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"  # Replace with your own generated UUID
+
+---
+# StatefulSet for Kafka brokers in KRaft mode
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: kafka-streams
+spec:
+  serviceName: kafka-service
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.8.1  # Using Apache Kafka image with KRaft support
+          ports:
+            - containerPort: 9092
+              name: client
+            - containerPort: 9093
+              name: controller
+          env:
+            # Extract node ID from pod name (kafka-0 -> 1, kafka-1 -> 2, kafka-2 -> 3)
+            - name: KAFKA_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: kafka-config
+                  key: CLUSTER_ID
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            # KRaft configuration
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@kafka-0.kafka-service.kafka-streams.svc.cluster.local:9093,2@kafka-1.kafka-service.kafka-streams.svc.cluster.local:9093,3@kafka-2.kafka-service.kafka-streams.svc.cluster.local:9093"
+
+            # Listeners
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://:9092,CONTROLLER://:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://$(POD_NAME).kafka-service.$(POD_NAMESPACE).svc.cluster.local:9092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+
+            # Replication settings for production
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "2"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "2"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "3"
+
+            # Other settings
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data"
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: "168"
+            - name: KAFKA_LOG_SEGMENT_BYTES
+              value: "1073741824"
+            - name: KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS
+              value: "300000"
+
+            # Performance tuning
+            - name: KAFKA_NUM_NETWORK_THREADS
+              value: "3"
+            - name: KAFKA_NUM_IO_THREADS
+              value: "8"
+            - name: KAFKA_SOCKET_SEND_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_SOCKET_RECEIVE_BUFFER_BYTES
+              value: "102400"
+            - name: KAFKA_SOCKET_REQUEST_MAX_BYTES
+              value: "104857600"
+
+          command:
+            - sh
+            - -c
+            - |
+              # Extract numeric ID from pod name (kafka-0 -> 1, kafka-1 -> 2, etc.)
+              export NODE_ID=$((${HOSTNAME##*-} + 1))
+              export KAFKA_NODE_ID=$NODE_ID
+
+              # Format storage if not already formatted
+              if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+                echo "Formatting storage with cluster ID: $CLUSTER_ID"
+                /opt/kafka/bin/kafka-storage.sh format \
+                  -t $CLUSTER_ID \
+                  -c /opt/kafka/config/kraft/server.properties \
+                  --ignore-formatted
+              fi
+
+              # Start Kafka
+              exec /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft/server.properties \
+                --override node.id=$NODE_ID \
+                --override process.roles=$KAFKA_PROCESS_ROLES \
+                --override controller.quorum.voters=$KAFKA_CONTROLLER_QUORUM_VOTERS \
+                --override listeners=$KAFKA_LISTENERS \
+                --override advertised.listeners=$KAFKA_ADVERTISED_LISTENERS \
+                --override listener.security.protocol.map=$KAFKA_LISTENER_SECURITY_PROTOCOL_MAP \
+                --override controller.listener.names=$KAFKA_CONTROLLER_LISTENER_NAMES \
+                --override inter.broker.listener.name=$KAFKA_INTER_BROKER_LISTENER_NAME \
+                --override log.dirs=$KAFKA_LOG_DIRS \
+                --override offsets.topic.replication.factor=$KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR \
+                --override transaction.state.log.replication.factor=$KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR \
+                --override transaction.state.log.min.isr=$KAFKA_TRANSACTION_STATE_LOG_MIN_ISR \
+                --override min.insync.replicas=$KAFKA_MIN_INSYNC_REPLICAS \
+                --override default.replication.factor=$KAFKA_DEFAULT_REPLICATION_FACTOR \
+                --override auto.create.topics.enable=$KAFKA_AUTO_CREATE_TOPICS_ENABLE
+
+          volumeMounts:
+            - name: kafka-storage
+              mountPath: /var/lib/kafka/data
+
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+# Job to create topics after Kafka is ready
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics-create
+  namespace: kafka-streams
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-topics
+          image: apache/kafka:3.8.1
+          command:
+            - sh
+            - -c
+            - |
+              # Wait for Kafka to be ready
+              echo "Waiting for Kafka to be ready..."
+              until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka-0.kafka-service.kafka-streams.svc.cluster.local:9092 > /dev/null 2>&1; do
+                echo "Kafka not ready yet, waiting..."
+                sleep 5
+              done
+
+              echo "Kafka is ready! Creating topics..."
+
+              # Create input topic
+              /opt/kafka/bin/kafka-topics.sh --create \
+                --topic streams-candlestick-input \
+                --partitions 6 \
+                --replication-factor 3 \
+                --bootstrap-server kafka-0.kafka-service.kafka-streams.svc.cluster.local:9092 \
+                --if-not-exists
+
+              # Create output topic
+              /opt/kafka/bin/kafka-topics.sh --create \
+                --topic streams-candlestick-processor-output \
+                --partitions 6 \
+                --replication-factor 3 \
+                --bootstrap-server kafka-0.kafka-service.kafka-streams.svc.cluster.local:9092 \
+                --if-not-exists
+
+              # Create DLQ topic
+              /opt/kafka/bin/kafka-topics.sh --create \
+                --topic streams-candlestick-dlq \
+                --partitions 1 \
+                --replication-factor 3 \
+                --bootstrap-server kafka-0.kafka-service.kafka-streams.svc.cluster.local:9092 \
+                --if-not-exists
+
+              echo "Topics created successfully!"
+
+              # List topics
+              /opt/kafka/bin/kafka-topics.sh --list \
+                --bootstrap-server kafka-0.kafka-service.kafka-streams.svc.cluster.local:9092

@@ -1,0 +1,307 @@
+################################################################################
+# ALL-IN-ONE KUBERNETES DEPLOYMENT WITH KAFKA KRAFT MODE
+# This file contains all resources needed to deploy the Candlestick Processor
+# with a 3-node Kafka cluster (KRaft mode, no Zookeeper) on Minikube
+################################################################################
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-streams
+
+################################################################################
+# KAFKA DEPLOYMENT IN KRAFT MODE (No Zookeeper)
+################################################################################
+
+---
+# Headless service for Kafka cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-service
+  namespace: kafka-streams
+  labels:
+    app: kafka
+spec:
+  ports:
+    - port: 9092
+      name: client
+      protocol: TCP
+    - port: 9093
+      name: controller
+      protocol: TCP
+  clusterIP: None
+  selector:
+    app: kafka
+
+---
+# ConfigMap for KRaft cluster configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+  namespace: kafka-streams
+data:
+  CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"  # Replace with your own generated UUID
+
+---
+# StatefulSet for Kafka brokers in KRaft mode
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: kafka-streams
+spec:
+  serviceName: kafka-service
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.8.1
+          ports:
+            - containerPort: 9092
+              name: client
+            - containerPort: 9093
+              name: controller
+          env:
+            - name: CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: kafka-config
+                  key: CLUSTER_ID
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@kafka-0.kafka-service.kafka-streams.svc.cluster.local:9093,2@kafka-1.kafka-service.kafka-streams.svc.cluster.local:9093,3@kafka-2.kafka-service.kafka-streams.svc.cluster.local:9093"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://:9092,CONTROLLER://:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://$(POD_NAME).kafka-service.$(POD_NAMESPACE).svc.cluster.local:9092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "2"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "2"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data"
+          command:
+            - sh
+            - -c
+            - |
+              export NODE_ID=$((${HOSTNAME##*-} + 1))
+              export KAFKA_NODE_ID=$NODE_ID
+
+              if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+                echo "Formatting storage with cluster ID: $CLUSTER_ID"
+                /opt/kafka/bin/kafka-storage.sh format \
+                  -t $CLUSTER_ID \
+                  -c /opt/kafka/config/kraft/server.properties \
+                  --ignore-formatted
+              fi
+
+              exec /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/kraft/server.properties \
+                --override node.id=$NODE_ID \
+                --override process.roles=$KAFKA_PROCESS_ROLES \
+                --override controller.quorum.voters=$KAFKA_CONTROLLER_QUORUM_VOTERS \
+                --override listeners=$KAFKA_LISTENERS \
+                --override advertised.listeners=$KAFKA_ADVERTISED_LISTENERS \
+                --override listener.security.protocol.map=$KAFKA_LISTENER_SECURITY_PROTOCOL_MAP \
+                --override controller.listener.names=$KAFKA_CONTROLLER_LISTENER_NAMES \
+                --override inter.broker.listener.name=$KAFKA_INTER_BROKER_LISTENER_NAME \
+                --override log.dirs=$KAFKA_LOG_DIRS \
+                --override offsets.topic.replication.factor=$KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR \
+                --override transaction.state.log.replication.factor=$KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR \
+                --override transaction.state.log.min.isr=$KAFKA_TRANSACTION_STATE_LOG_MIN_ISR \
+                --override min.insync.replicas=$KAFKA_MIN_INSYNC_REPLICAS \
+                --override default.replication.factor=$KAFKA_DEFAULT_REPLICATION_FACTOR \
+                --override auto.create.topics.enable=$KAFKA_AUTO_CREATE_TOPICS_ENABLE
+          volumeMounts:
+            - name: kafka-storage
+              mountPath: /var/lib/kafka/data
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 60
+            periodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
+
+################################################################################
+# CANDLESTICK PROCESSOR DEPLOYMENT
+################################################################################
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: candlestick-processor-config
+  namespace: kafka-streams
+data:
+  INPUT_TOPIC: "streams-candlestick-input"
+  OUTPUT_TOPIC: "streams-candlestick-processor-output"
+  DLQ_TOPIC: "streams-candlestick-dlq"
+  APPLICATION_ID: "candlestick-processor"
+  BOOTSTRAP_SERVERS: "kafka-service:9092"
+  NUM_STREAM_THREADS: "2"
+  REPLICATION_FACTOR: "3"
+  NUM_STANDBY_REPLICAS: "1"
+  STATE_DIR: "/var/kafka-streams"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-streams-state-pvc
+  namespace: kafka-streams
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: standard
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candlestick-processor
+  namespace: kafka-streams
+  labels:
+    app: candlestick-processor
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: candlestick-processor
+  template:
+    metadata:
+      labels:
+        app: candlestick-processor
+    spec:
+      containers:
+        - name: candlestick-processor
+          image: candlestick-processor:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          envFrom:
+            - configMapRef:
+                name: candlestick-processor-config
+
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+
+          volumeMounts:
+            - name: state-storage
+              mountPath: /var/kafka-streams
+
+          livenessProbe:
+            exec:
+              command:
+                - pgrep
+                - -f
+                - candlestick-processor
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command:
+                - pgrep
+                - -f
+                - candlestick-processor
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+      volumes:
+        - name: state-storage
+          persistentVolumeClaim:
+            claimName: kafka-streams-state-pvc
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - candlestick-processor
+                topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: candlestick-processor-service
+  namespace: kafka-streams
+spec:
+  selector:
+    app: candlestick-processor
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
